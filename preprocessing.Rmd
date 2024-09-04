@@ -1,0 +1,110 @@
+---
+title: "analysis"
+author: "Yifan Duan"
+date: "2024-09-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r loading package}
+library(Seurat)
+library(BPCells)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(cowplot)
+# set this option when analyzing large datasets
+options(future.globals.maxSize = 3e+09)
+```
+
+
+```{r}
+flu_dat <- open_matrix_anndata_hdf5("data/flu_processed.h5ad")
+write_matrix_dir(mat = flu_dat, dir = "data/flu_counts")
+
+flu_mat <- open_matrix_dir(dir = "data/flu_counts")
+flu_obj <- CreateSeuratObject(counts = flu_mat)
+
+flu_obj
+```
+
+
+```{r adding metadata}
+# this contains cluster info
+cluster_data <- read.table("data/primary_clusterdata.txt", header = T, 
+                           quote = "", sep = "\t", row.names = 1)
+cluster_data <- cluster_data[-1,]
+
+# other metadata like annotations
+meta_data <- read.table("data/scp_primary_metadata.txt", header = T,
+                        quote = "", sep = "\t", row.names = 1)
+meta_data <- meta_data[-1, ]
+
+flu_obj <- AddMetaData(flu_obj, c(cluster_data, meta_data))
+```
+
+
+```{r}
+columns_to_convert <- c("X", "Y", "number_of_reads", "number_of_features")
+flu_obj@meta.data[columns_to_convert] <- lapply(flu_obj@meta.data[columns_to_convert], as.numeric)
+
+columns_to_convert <- c("Tissue.Region", "Cluster.Label", "Time.Point", 
+                        "Cell.Type", "biosample_id", "donor_id", "species", 
+                        "species__ontology_label", "sex", "disease", 
+                        "disease__ontology_label", "organ", "organ_custom", 
+                        "organ__ontology_label", "library_preparation_protocol", "library_preparation_protocol__ontology_label", "cell_type", 
+                        "cell_type__ontology_label", "cell_type_custom")
+flu_obj@meta.data[columns_to_convert] <- lapply(flu_obj@meta.data[columns_to_convert], as.factor)
+
+
+ggplot(flu_obj@meta.data, aes(x = X, y = Y, colour = Cell.Type)) +
+  geom_point() + theme_cowplot()
+```
+
+```{r}
+flu_obj@meta.data <- flu_obj@meta.data %>%
+  mutate(cell_label = case_when(
+    Cell.Type == 1 ~ "Neuron",
+    Cell.Type == 2 ~ "Epithelial",
+    Cell.Type == 3 ~ "Myeloid",
+    Cell.Type == 4 ~ "Granulocyte",
+    Cell.Type == 5 ~ "B Cell",
+    Cell.Type == 6 ~ "T/NK Cell",
+    Cell.Type == 7 ~ "Endothelial",
+    Cell.Type == 8 ~ "Fibroblast", 
+    Cell.Type == 9 ~ "Stromal",
+    Cell.Type == 10 ~ "HSC"
+  ))
+
+flu_obj@meta.data$cell_label <- as.factor(flu_obj@meta.data$cell_label)
+
+ggplot(flu_obj@meta.data, aes(x = X, y = Y, colour = cell_label)) +
+  geom_point() + 
+  theme_cowplot()
+
+flu_obj <- SetIdent(flu_obj, value = "cell_label")
+
+```
+
+
+```{r}
+saveRDS(
+  object = flu_obj,
+  file = "data/flu.Rds"
+)
+```
+
+
+```{r}
+# subset only neuron
+neuron_obj <- subset(flu_obj, cell_label == "Neuron")
+saveRDS(object = neuron_obj,
+        file = "data/neuron.Rds")
+```
+

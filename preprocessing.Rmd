@@ -24,13 +24,24 @@ options(future.globals.maxSize = 3e+09)
 ```
 
 
+```{r using BPCells to load the matrix}
+if (!file.exists("data/flu_counts")) {
+  flu_mat <- open_matrix_anndata_hdf5("data/flu_processed.h5ad") |> 
+    write_matrix_dir(dir = "data/flu_counts")
+} else {
+  flu_mat <- open_matrix_dir(dir = "data/flu_counts")
+}
+```
+
+
 ```{r}
-flu_dat <- open_matrix_anndata_hdf5("data/flu_processed.h5ad")
-write_matrix_dir(mat = flu_dat, dir = "data/flu_counts")
+# Normalize by reads-per-cell
+flu_mat <- multiply_cols(flu_mat, 1/Matrix::colSums(flu_mat))
 
-flu_mat <- open_matrix_dir(dir = "data/flu_counts")
+# Log normalization
+flu_mat <- log1p(flu_mat * 10000) # Log normalization
+
 flu_obj <- CreateSeuratObject(counts = flu_mat)
-
 flu_obj
 ```
 
@@ -67,6 +78,7 @@ ggplot(flu_obj@meta.data, aes(x = X, y = Y, colour = Cell.Type)) +
   geom_point() + theme_cowplot()
 ```
 
+
 ```{r}
 flu_obj@meta.data <- flu_obj@meta.data %>%
   mutate(cell_label = case_when(
@@ -94,17 +106,14 @@ flu_obj <- SetIdent(flu_obj, value = "cell_label")
 
 
 ```{r}
-saveRDS(
-  object = flu_obj,
-  file = "data/flu.Rds"
-)
+# saving the influenza data
+saveRDS(object = flu_obj, file = "data/flu.Rds")
 ```
 
 
 ```{r}
 # subset only neuron
 neuron_obj <- subset(flu_obj, cell_label == "Neuron")
-saveRDS(object = neuron_obj,
-        file = "data/neuron.Rds")
+saveRDS(object = neuron_obj, file = "data/neuron.Rds")
 ```
 

@@ -1,0 +1,85 @@
+---
+title: "analysis"
+author: "Yifan Duan"
+date: "2024-09-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Seurat)
+library(BPCells)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(cowplot)
+library(irlba)
+# set this option when analyzing large datasets
+options(future.globals.maxSize = 3e+09)
+
+neuron_obj <- readRDS("data/neuron.Rds")
+```
+
+
+```{r}
+# find variable genes with Seurat
+neuron_obj <- FindVariableFeatures(neuron_obj, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(neuron_obj), 10)
+
+plot1 <- VariableFeaturePlot(neuron_obj)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2
+
+# selecting top 2000 variable genes
+neuron_mat <- neuron_obj@assays$RNA$counts
+neuron_mat_norm <- neuron_mat[VariableFeatures(neuron_obj),]
+
+# saves time according to BPCells
+neuron_mat_norm <- neuron_mat_norm %>% write_matrix_dir(tempfile("mat"))
+```
+
+
+```{r}
+# PCA
+svd <- BPCells::svds(neuron_mat_norm, k = 50)
+#svd <- irlba(neuron_mat_norm, nv=50)
+pca <- multiply_cols(svd$v, svd$d)
+
+colnames(pca) <- paste0("PC_", 1:ncol(pca))
+rownames(pca) <- colnames(neuron_mat_norm)
+
+neuron_obj[["pca"]] <- CreateDimReducObject(embeddings = pca, key = "PC_", 
+                                         assay = DefaultAssay(neuron_obj))
+
+plot(svd$d / sqrt(nrow(neuron_mat_norm)))
+```
+
+
+```{r}
+# UMAP
+set.seed(123)
+umap <- uwot::umap(pca)
+
+colnames(umap) <- paste0("UMAP_", 1:2)
+rownames(umap) <- colnames(neuron_mat_norm)
+
+neuron_obj[["umap"]] <- CreateDimReducObject(embeddings = umap, key = "UMAP_", 
+                                         assay = DefaultAssay(neuron_obj))
+
+DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type__ontology_label")
+```
+
+
+```{r}
+# clustering
+neuron_obj <- FindNeighbors(neuron_obj, dims = 1:10)
+neuron_obj <- FindClusters(neuron_obj, resolution = 0.1)
+
+head(Idents(neuron_obj), 5)
+```

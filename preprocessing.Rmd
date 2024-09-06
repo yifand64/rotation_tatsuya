@@ -36,10 +36,10 @@ if (!file.exists("data/flu_counts")) {
 
 ```{r}
 # Normalize by reads-per-cell
-flu_mat <- multiply_cols(flu_mat, 1/Matrix::colSums(flu_mat))
+#flu_mat <- multiply_cols(flu_mat, 1/Matrix::colSums(flu_mat))
 
 # Log normalization
-flu_mat <- log1p(flu_mat * 10000) # Log normalization
+#flu_mat <- log1p(flu_mat * 10000) # Log normalization
 
 flu_obj <- CreateSeuratObject(counts = flu_mat)
 flu_obj

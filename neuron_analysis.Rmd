@@ -72,14 +72,38 @@ rownames(umap) <- colnames(neuron_mat_norm)
 neuron_obj[["umap"]] <- CreateDimReducObject(embeddings = umap, key = "UMAP_", 
                                          assay = DefaultAssay(neuron_obj))
 
-DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type__ontology_label")
+DimPlot(neuron_obj, reduction = "umap", group.by = "Cluster.Label")
 ```
 
 
 ```{r}
 # clustering
-neuron_obj <- FindNeighbors(neuron_obj, dims = 1:10)
-neuron_obj <- FindClusters(neuron_obj, resolution = 0.1)
+neuron_obj <- FindNeighbors(neuron_obj, dims = 1:50)
+# Define the range of resolutions
+resolutions <- c(0.2)
 
-head(Idents(neuron_obj), 5)
+# Loop through the resolutions and store clustering results in Seurat object's metadata
+for (res in resolutions) {
+  neuron_obj <- FindClusters(neuron_obj, resolution = res, 
+                             verbose = FALSE, method = "igraph",
+                             algorithm = 4) # leiden
+  
+  # Store the clustering results with a label corresponding to the resolution
+  cluster_column <- paste0("RNA_snn_res.", res)
+  neuron_obj@meta.data[[paste0("clusters_res_", res)]] <- neuron_obj@meta.data[[cluster_column]]
+}
+
+DimPlot(neuron_obj, reduction = "umap", group.by = "clusters_res_0.2")
 ```
+
+
+```{r}
+# add the count to data layer would fix it
+neuron_obj[["RNA"]]$data <- neuron_obj[["RNA"]]$counts
+
+Idents(neuron_obj) <- "RNA_snn_res.0.2"
+FindMarkers(neuron_obj, ident.1 = "1", assay = "RNA")
+
+dim(neuron_obj[["RNA"]]$counts)
+```
+

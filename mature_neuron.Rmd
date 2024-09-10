@@ -1,0 +1,75 @@
+---
+title: "mature neuron"
+author: "Yifan Duan"
+date: "2024-09-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Seurat)
+library(BPCells)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(cowplot)
+library(irlba)
+```
+
+
+```{r visualizing composition change over time, eval=FALSE}
+# just ignore this one, this is diagnostic for composition
+flu_obj <- readRDS("data/flu.Rds")
+View(flu_obj)
+
+levels(flu_obj$cell_type__ontology_label)
+
+flu_obj$simple_label <- case_when(
+  flu_obj$cell_type__ontology_label %in% c("neural progenitor cell", "vomeronasal sensory neuron", "olfactory receptor cell") ~ "Neuron",
+  flu_obj$cell_type__ontology_label %in% c("basal cell", "brush cell", "ciliated epithelial cell", "epithelial cell", "glandular epithelial cell", "goblet cell", "ionocyte", "serous secreting cell") ~ "Epithelial",
+  flu_obj$cell_type__ontology_label %in% c("alpha-beta T cell", "B cell", "CD4-positive, alpha-beta T cell", "CD8-positive, alpha-beta T cell", "dendritic cell", "gamma-delta T cell", "granulocyte monocyte progenitor cell", "group 2 innate lymphoid cell", "group 3 innate lymphoid cell", "macrophage", "mast cell", "monocyte", "natural killer cell", "neutrophil", "precursor B cell", "hematopoietic stem cell", "plasmacytoid dendritic cell", "plasma cell") ~ "Immune",
+  TRUE ~ "Other")
+
+flu_obj$simple_label <- as.factor(flu_obj$simple_label)
+
+# list of "other" celltype
+# chondrocyte
+# endothelial cell
+# fibroblast
+# stromal cell
+# smooth muscle cell
+# pericyte
+# osteoclast
+# osteoblast
+# smooth muscle cell
+
+lng_obj <- subset(flu_obj, subset = Tissue.Region == "LNG")
+
+comp_change <- as.data.frame(table(lng_obj$simple_label, lng_obj$Time.Point))
+colnames(comp_change) <- c("Celltype", "Timepoint", "Counts")
+comp_change <- comp_change |>
+  mutate(Timepoint = factor(Timepoint, levels = c("Naive", "2 dpi", "5 dpi", "8 dpi", "14 dpi"))) 
+
+
+# need to get the proportion of celltype per timepoint
+total_count <- comp_change |> group_by(Timepoint) |> summarise(total = sum(Counts)) |> ungroup()
+total_count |> ggplot(aes(x = Timepoint, y = total)) + 
+  geom_bar(stat = "identity") + theme_cowplot()
+
+comp_change |> group_by(Timepoint, Celltype) |> summarise(avg_count = Counts) |> ungroup() |> mutate(total_count = rep(total_count$total, each = 4)) |> mutate(prop = avg_count / total_count) |>
+  ggplot(aes(x = Timepoint, y = prop, fill = Celltype)) + 
+  geom_bar(stat = "identity") + theme_cowplot() + 
+  theme(legend.position = "top", axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+
+```{r}
+
+```
+

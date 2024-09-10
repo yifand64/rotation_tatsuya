@@ -89,11 +89,12 @@ for (res in resolutions) {
                              algorithm = 4) # leiden
   
   # Store the clustering results with a label corresponding to the resolution
-  cluster_column <- paste0("RNA_snn_res.", res)
-  neuron_obj@meta.data[[paste0("clusters_res_", res)]] <- neuron_obj@meta.data[[cluster_column]]
+  #cluster_column <- paste0("RNA_snn_res.", res)
 }
 
-DimPlot(neuron_obj, reduction = "umap", group.by = "clusters_res_0.2")
+DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type__ontology_label")
+DimPlot(neuron_obj, reduction = "umap", group.by = "donor_id")
+
 ```
 
 
@@ -102,8 +103,50 @@ DimPlot(neuron_obj, reduction = "umap", group.by = "clusters_res_0.2")
 neuron_obj[["RNA"]]$data <- neuron_obj[["RNA"]]$counts
 
 Idents(neuron_obj) <- "RNA_snn_res.0.2"
-FindMarkers(neuron_obj, ident.1 = "1", assay = "RNA")
+#FindMarkers(neuron_obj, ident.1 = "6", assay = "RNA")
 
 dim(neuron_obj[["RNA"]]$counts)
+
+FeaturePlot(neuron_obj, features = c("Omp", "Stoml3", "Cnga2", "Adcy3"))
+```
+
+
+```{r investigating doublet}
+# 1. higher counts than the rest
+# 2. mixture of markers 
+grp6_marker <- FindMarkers(neuron_obj, ident.1 = "6", assay = "RNA")
+doublet_obj <- subset(neuron_obj, subset = RNA_snn_res.0.2 == "6")
+
+library(EnhancedVolcano)
+pdf("figure/DE_genes_grp6.pdf")
+EnhancedVolcano(grp6_marker, 
+                rownames(grp6_marker),
+                x ="avg_log2FC", 
+                y ="p_val_adj")
+dev.off()
+
+DimPlot(doublet_obj, reduction = "umap", group.by = "Cluster.Label")
+cluster_table <- table(doublet_obj$Cluster.Label)
+cluster_table <- cluster_table[cluster_table != 0]
+
+VlnPlot(neuron_obj, features = "nCount_RNA", group.by = "seurat_clusters")
+VlnPlot(neuron_obj, features = "nFeature_RNA", group.by = "seurat_clusters")
+
+library(DoubletFinder)
+neuron_obj <- doubletFinder_v3(neuron_obj, PCs = 1:10, pN = 0.25, pK = best_pK, nExp = 500)
+
+
+```
+
+
+```{r}
+saveRDS(neuron_obj, file = "data/neuron.Rds")
+
+FeaturePlot(neuron_obj, features = c("Nqo1","Acsm4", "Nfix", "Ncam2"))
+# dorsal acsm4, nqo1
+# ventral nfix, ncam2
+
+mature_neuron_obj <- subset(neuron_obj, subset = RNA_snn_res.0.2 == c("1", "2", "4", "6"))
+saveRDS(mature_neuron_obj, "data/mature_neuron.Rds")
 ```
 

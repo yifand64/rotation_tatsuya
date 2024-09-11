@@ -29,15 +29,16 @@ neuron_obj <- readRDS("data/neuron.Rds")
 
 ```{r}
 # find variable genes with Seurat
-neuron_obj <- FindVariableFeatures(neuron_obj, selection.method = "vst", nfeatures = 2000)
-top10 <- head(VariableFeatures(neuron_obj), 10)
+neuron_obj <- FindVariableFeatures(neuron_obj, selection.method = "vst", 
+                                   nfeatures = 2000, layer = "data")
+top20 <- head(VariableFeatures(neuron_obj), 20)
 
 plot1 <- VariableFeaturePlot(neuron_obj)
-plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2 <- LabelPoints(plot = plot1, points = top20, repel = TRUE)
 plot2
 
 # selecting top 2000 variable genes
-neuron_mat <- neuron_obj@assays$RNA$counts
+neuron_mat <- neuron_obj@assays$RNA$data
 neuron_mat_norm <- neuron_mat[VariableFeatures(neuron_obj),]
 
 # saves time according to BPCells
@@ -72,7 +73,7 @@ rownames(umap) <- colnames(neuron_mat_norm)
 neuron_obj[["umap"]] <- CreateDimReducObject(embeddings = umap, key = "UMAP_", 
                                          assay = DefaultAssay(neuron_obj))
 
-DimPlot(neuron_obj, reduction = "umap", group.by = "Cluster.Label")
+DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type__ontology_label")
 ```
 
 
@@ -80,7 +81,7 @@ DimPlot(neuron_obj, reduction = "umap", group.by = "Cluster.Label")
 # clustering
 neuron_obj <- FindNeighbors(neuron_obj, dims = 1:50)
 # Define the range of resolutions
-resolutions <- c(0.2)
+resolutions <- c(0.25)
 
 # Loop through the resolutions and store clustering results in Seurat object's metadata
 for (res in resolutions) {
@@ -92,50 +93,42 @@ for (res in resolutions) {
   #cluster_column <- paste0("RNA_snn_res.", res)
 }
 
-DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type__ontology_label")
-DimPlot(neuron_obj, reduction = "umap", group.by = "donor_id")
+DimPlot(neuron_obj, reduction = "umap", group.by = "RNA_snn_res.0.25", label = T) + 
+  theme(legend.position = "none")
+DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type_custom", label = T) + 
+  theme(legend.position = "none")
 
 ```
 
 
 ```{r}
-# add the count to data layer would fix it
-neuron_obj[["RNA"]]$data <- neuron_obj[["RNA"]]$counts
-
-Idents(neuron_obj) <- "RNA_snn_res.0.2"
-#FindMarkers(neuron_obj, ident.1 = "6", assay = "RNA")
+Idents(neuron_obj) <- "RNA_snn_res.0.25"
+#FindMarkers(neuron_obj, ident.1 = "7", assay = "RNA")
 
 dim(neuron_obj[["RNA"]]$counts)
 
+pdf("figure/marker_mature_OSN.pdf")
 FeaturePlot(neuron_obj, features = c("Omp", "Stoml3", "Cnga2", "Adcy3"))
+dev.off()
 ```
 
 
 ```{r investigating doublet}
 # 1. higher counts than the rest
 # 2. mixture of markers 
-grp6_marker <- FindMarkers(neuron_obj, ident.1 = "6", assay = "RNA")
-doublet_obj <- subset(neuron_obj, subset = RNA_snn_res.0.2 == "6")
+grp7_marker <- FindMarkers(neuron_obj, ident.1 = "7", assay = "RNA")
 
 library(EnhancedVolcano)
-pdf("figure/DE_genes_grp6.pdf")
-EnhancedVolcano(grp6_marker, 
-                rownames(grp6_marker),
+pdf("figure/DE_genes_grp7.pdf")
+EnhancedVolcano(grp7_marker, 
+                rownames(grp7_marker),
                 x ="avg_log2FC", 
                 y ="p_val_adj")
 dev.off()
 
-DimPlot(doublet_obj, reduction = "umap", group.by = "Cluster.Label")
-cluster_table <- table(doublet_obj$Cluster.Label)
-cluster_table <- cluster_table[cluster_table != 0]
 
-VlnPlot(neuron_obj, features = "nCount_RNA", group.by = "seurat_clusters")
-VlnPlot(neuron_obj, features = "nFeature_RNA", group.by = "seurat_clusters")
-
-library(DoubletFinder)
-neuron_obj <- doubletFinder_v3(neuron_obj, PCs = 1:10, pN = 0.25, pK = best_pK, nExp = 500)
-
-
+VlnPlot(neuron_obj, features = "number_of_reads", group.by = "seurat_clusters")
+VlnPlot(neuron_obj, features = "number_of_features", group.by = "seurat_clusters")
 ```
 
 
@@ -145,8 +138,5 @@ saveRDS(neuron_obj, file = "data/neuron.Rds")
 FeaturePlot(neuron_obj, features = c("Nqo1","Acsm4", "Nfix", "Ncam2"))
 # dorsal acsm4, nqo1
 # ventral nfix, ncam2
-
-mature_neuron_obj <- subset(neuron_obj, subset = RNA_snn_res.0.2 == c("1", "2", "4", "6"))
-saveRDS(mature_neuron_obj, "data/mature_neuron.Rds")
 ```
 

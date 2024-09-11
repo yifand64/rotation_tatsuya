@@ -106,6 +106,19 @@ flu_obj <- SetIdent(flu_obj, value = "cell_label")
 
 
 ```{r}
+flu_obj <- readRDS("data/flu.Rds")
+if (!file.exists("data/flu_counts_raw")) {
+  flu_mat_raw <- open_matrix_anndata_hdf5("data/flu_raw.h5ad") |> 
+    write_matrix_dir(dir = "data/flu_counts_raw")
+} else {
+  flu_mat_raw <- open_matrix_dir(dir = "data/flu_counts_raw")
+}
+
+flu_obj[["RNA"]]$data <- flu_obj[["RNA"]]$counts
+flu_obj[["RNA"]]$counts <- flu_mat_raw
+
+# test visually if counts and data (normalized) are correct
+#colSums(as.matrix(flu_obj[["RNA"]]$data[1:10, 1:10]))
 # saving the influenza data
 saveRDS(object = flu_obj, file = "data/flu.Rds")
 ```
@@ -114,6 +127,8 @@ saveRDS(object = flu_obj, file = "data/flu.Rds")
 ```{r}
 # subset only neuron
 neuron_obj <- subset(flu_obj, cell_label == "Neuron")
+#neuron_obj[["RNA"]]$counts <- matrix
+
 saveRDS(object = neuron_obj, file = "data/neuron.Rds")
 ```
 

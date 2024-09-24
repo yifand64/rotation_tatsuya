@@ -1,0 +1,269 @@
+---
+title: "Finding HVG"
+author: "Yifan Duan"
+date: "2024-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Seurat)
+library(BPCells)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(cowplot)
+library(irlba)
+library(tidyr)
+library(tibble)
+```
+
+
+```{r}
+neuron_obj <- readRDS("data/neuron.Rds")
+# all of the ORs with "real" effect
+or_list <- read.table("data/Olfr_GO_unique_Rel94.txt", header = T, sep = "\t", quote = "")
+
+# subsetting the neuron to mature neuron only
+mature_neuron_obj <- subset(neuron_obj, subset = RNA_snn_res.0.25 %in% c("1", "2", "4", "7", "8"), features = or_list$Gene.name)
+
+# getting the raw counts
+counts_matrix <- mature_neuron_obj[["RNA"]]$counts
+# more than 3 UMIs counts as OR expressed
+counts_matrix_dpi <- as.data.frame(t(apply(counts_matrix, 2, function(x) ifelse(x >= 3, 1, 0))))
+# filtering out the cell that expresses more than 1 OR
+counts_matrix_dpi <- counts_matrix_dpi |> filter(rowSums(counts_matrix_dpi) == 1)
+
+counts_matrix_dpi$dpi <- as.factor(sub("_.*", "", rownames(counts_matrix_dpi)))
+
+# converting into dataframe per dpi for each OR (to select them later)
+dpi_or_composition <- counts_matrix_dpi %>%
+  pivot_longer(cols = -dpi, names_to = "ORs", values_to = "count") %>%
+  group_by(ORs, dpi) %>%
+  summarize(count = sum(count), .groups = 'drop') %>%
+  pivot_wider(names_from = dpi, values_from = count, values_fill = list(count = 0))
+
+# only if it's 4 or more cells in each dpi for each OR
+dpi_or_composition_filtered <- dpi_or_composition |> 
+  filter(if_all(where(is.numeric), ~ . >= 4))
+
+ORs_interested <- dpi_or_composition_filtered$ORs
+```
+
+
+```{r}
+# using OR_filtered list containing 308 ORs to get cell expressing them only
+cell_interested <- counts_matrix_dpi[, colnames(counts_matrix_dpi) %in% ORs_interested]
+all_zero_rows <- apply(cell_interested, 1, function(row) all(row == 0))
+
+# Display the rows that are all zero
+cell_interested <- cell_interested |> filter(all_zero_rows == F)
+
+```
+
+
+```{r}
+sample_ORs_by_dpi <- function(data, n = 4) {
+  cell_to_subsample <- c()
+  
+  for (OR_names in colnames(data)){
+    OR_data <- data |> select(OR_names) |> filter(get(OR_names) != 0)
+    
+    # adding cell name & dpi as column 
+    OR_data <- OR_data |> mutate(cell_name = rownames(OR_data),
+                                 dpi = as.factor(sub("_.*", "", rownames(OR_data))),
+                                 OR = OR_names)
+    OR_samples <- OR_data |>
+      group_by(dpi) |> sample_n(min(n(), n), replace = FALSE)
+    
+    cell_to_subsample <- unique(c(cell_to_subsample, OR_samples$cell_name))
+  }
+  return(cell_to_subsample)
+}
+
+
+# 4 cells * 5 dpi * 308 ORs = 6160 cells (if done correctly)
+test <- sample_ORs_by_dpi(cell_interested, 4)
+length(test)
+length(unique(test)) # 5658 unique, not equal to 6160??
+```
+
+
+```{r eval=FALSE}
+all_HVGs <- list()
+set.seed(25)
+
+for (i in 1:10){
+  # selecting the cell that express each OR of interest (3 UMIs + at least 4 cells per dpi)
+  # selecting 4 cells per OR per dpi would mediate effect of abundant OR
+  barcode_interested <- sample_ORs_by_dpi(cell_interested)
+  
+  # subset the seurat object to the criteria listed above
+  filtered_mature_neuron_obj <- subset(neuron_obj, 
+                                     features = setdiff(rownames(neuron_obj), or_list$Gene.name), 
+                                     cells = barcode_interested)
+  
+  # find HVGs 
+  filtered_mature_neuron_obj <- FindVariableFeatures(filtered_mature_neuron_obj, 
+                                                   selection.method = "vst", 
+                                                   nfeatures = 2000, 
+                                                   layer = "data")
+  
+  HVGs <- VariableFeatures(filtered_mature_neuron_obj)
+  all_HVGs[[i]] <- HVGs
+}
+
+gene_freq_df <- as.data.frame(table(unlist(all_HVGs)))
+colnames(gene_freq_df) <- c("gene", "freq")
+
+write.table(gene_freq_df, file = "data/gene_freq_10iterations.csv", sep = ",", row.names = FALSE, col.names = TRUE)
+
+#HVFInfo(filtered_mature_neuron_obj)
+```
+
+
+```{r}
+gene_freq_df <- read_csv("data/gene_freq_10iterations.csv")
+gene_freq_df |> ggplot(aes(x = as.factor(freq))) + geom_bar(stat = "count") + 
+  theme_cowplot() + ggtitle("2000 HVGs over 10 iterations")
+
+hvg_filtered <- gene_freq_df |> filter(freq > 1)
+rheostat_hvg <- read_csv("data/rheostat_table_s2.csv")
+
+library(ggvenn)
+
+# Define the two sets
+hvg_overlap <- list(rheostat_hvg = rheostat_hvg$Gene, 
+                    influenza_hvg = as.character(hvg_filtered$gene))
+ggvenn(hvg_overlap)
+```
+
+
+```{r}
+# cosine similarity
+library(lsa) 
+
+filtered_mature_neuron_mat <- filtered_mature_neuron_obj[["RNA"]]$data
+filtered_mature_neuron_mat_hvg <- filtered_mature_neuron_mat[VariableFeatures(filtered_mature_neuron_obj),]
+
+# saves time according to BPCells
+filtered_mature_neuron_mat_hvg <- filtered_mature_neuron_mat_hvg %>% write_matrix_dir(tempfile("mat"))
+
+# PCA
+svd <- BPCells::svds(filtered_mature_neuron_mat_hvg, k = 50)
+#svd <- irlba(neuron_mat_norm, nv=50)
+pca <- multiply_cols(svd$v, svd$d)
+
+colnames(pca) <- paste0("PC_", 1:ncol(pca))
+rownames(pca) <- colnames(filtered_mature_neuron_mat_hvg)
+
+plot(svd$d / sqrt(nrow(filtered_mature_neuron_mat_hvg)))
+pca_top_20 <- pca[, 1:20]
+
+# compute the cosine distance
+cos_dist <- 1 - cosine(t(pca_top_20))
+
+cos_dist[1:3, 1:3]
+# need to associate barcode with OR
+
+#write.csv(cos_dist, file = "data/cos_dist.csv")
+```
+
+
+```{r}
+get_cell_metadata <- function(feature_table, OR_list){
+  cell_metadata <- data.frame()
+  
+  for (OR_names in OR_list) {
+    OR_data <- feature_table |> 
+      select(OR_names) |> 
+      filter(get(OR_names) != 0)
+    
+    # Adding cell name & dpi as columns 
+    OR_data <- OR_data |> 
+      mutate(cell_name = rownames(OR_data),
+             dpi = as.factor(sub("_.*", "", rownames(OR_data))),
+             OR = OR_names) |> 
+      select(-all_of(OR_names))  # Use all_of() to correctly reference the column
+    
+    # Combine results
+    cell_metadata <- bind_rows(cell_metadata, OR_data)  
+  }
+  return(cell_metadata)
+}
+
+get_cell_metadata(cell_interested, ORs_interested)
+
+write_csv(cell_metadata, file = "data/cell_metadata.csv")
+# View the result
+dim(cos_dist)
+subset_cell_metadata <- cell_metadata[cell_metadata$cell_name %in% barcode_interested, ]
+
+```
+
+
+```{r within OR distance}
+within_dist <- function(dist_matrix, metadata){
+  # Extract the OR groups from the metadata
+  unique_ors <- unique(metadata$OR)
+  
+  # Initialize a vector to store the median within-OR distances
+  within_or_medians <- data.frame(OR = character(), median_dist = numeric())
+  
+  for (or in unique_ors) {
+    # Get cell names for the current OR
+    cells_for_or <- metadata$cell_name[metadata$OR == or]
+    
+    # Filter the cosine distance matrix for these cells
+    matrix_for_or <- dist_matrix[cells_for_or, cells_for_or, drop = F]
+    
+    # Extract the upper triangle of the matrix as a vector of distances
+    upper_triangle_distances <- matrix_for_or[upper.tri(matrix_for_or)]
+      
+    # Calculate the median of the pairwise distances
+    median_distance <- median(upper_triangle_distances, na.rm = TRUE)
+
+    within_or_medians <- rbind(within_or_medians, data.frame(OR = or, median_dist = median_distance))
+  }
+  
+  return(within_or_medians)
+}
+
+median_distance <- within_dist(cos_dist, subset_cell_metadata)
+hist(median_distance$median_dist)
+```
+
+
+```{r}
+between_dist <- c()
+for (or in median_distance$OR){
+  between_dist[[or]] <- median_distance |> filter(OR != or)
+}
+
+# Initialize an empty data frame to store the results
+hist(between_dist$Olfr1019$median_dist)
+median_between_distances <- data.frame(OR = character(), 
+                                       between_dist_median = numeric(), 
+                                       stringsAsFactors = FALSE)
+
+# Loop through each OR in the between_dist list
+for (or in names(between_dist)) {
+  # Compute the median of 'median_dist' for the current OR
+  median_value <- median(between_dist[[or]]$median_dist, na.rm = TRUE)
+  
+  # Add the result to the data frame
+  median_between_distances <- rbind(median_between_distances, 
+                                    data.frame(OR = or, 
+                                               between_dist_median = median_value))
+}
+
+# View the result
+print(median_between_distances)
+```
+

@@ -1,0 +1,221 @@
+---
+title: "mature neuron"
+author: "Yifan Duan"
+date: "2024-09-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Seurat)
+library(BPCells)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(cowplot)
+library(irlba)
+library(tidyr)
+library(tibble)
+```
+
+
+```{r visualizing composition change over time, eval=FALSE}
+# just ignore this one, this is diagnostic for composition
+flu_obj <- readRDS("data/flu.Rds")
+View(flu_obj)
+
+levels(flu_obj$cell_type__ontology_label)
+
+flu_obj$simple_label <- case_when(
+  flu_obj$cell_type__ontology_label %in% c("neural progenitor cell", "vomeronasal sensory neuron", "olfactory receptor cell") ~ "Neuron",
+  flu_obj$cell_type__ontology_label %in% c("basal cell", "brush cell", "ciliated epithelial cell", "epithelial cell", "glandular epithelial cell", "goblet cell", "ionocyte", "serous secreting cell") ~ "Epithelial",
+  flu_obj$cell_type__ontology_label %in% c("alpha-beta T cell", "B cell", "CD4-positive, alpha-beta T cell", "CD8-positive, alpha-beta T cell", "dendritic cell", "gamma-delta T cell", "granulocyte monocyte progenitor cell", "group 2 innate lymphoid cell", "group 3 innate lymphoid cell", "macrophage", "mast cell", "monocyte", "natural killer cell", "neutrophil", "precursor B cell", "hematopoietic stem cell", "plasmacytoid dendritic cell", "plasma cell") ~ "Immune",
+  TRUE ~ "Other")
+
+flu_obj$simple_label <- as.factor(flu_obj$simple_label)
+
+# list of "other" celltype
+# chondrocyte
+# endothelial cell
+# fibroblast
+# stromal cell
+# smooth muscle cell
+# pericyte
+# osteoclast
+# osteoblast
+# smooth muscle cell
+
+lng_obj <- subset(flu_obj, subset = Tissue.Region == "LNG")
+
+comp_change <- as.data.frame(table(lng_obj$simple_label, lng_obj$Time.Point))
+colnames(comp_change) <- c("Celltype", "Timepoint", "Counts")
+comp_change <- comp_change |>
+  mutate(Timepoint = factor(Timepoint, levels = c("Naive", "2 dpi", "5 dpi", "8 dpi", "14 dpi"))) 
+
+
+# need to get the proportion of celltype per timepoint
+total_count <- comp_change |> group_by(Timepoint) |> summarise(total = sum(Counts)) |> ungroup()
+total_count |> ggplot(aes(x = Timepoint, y = total)) + 
+  geom_bar(stat = "identity") + theme_cowplot()
+
+comp_change |> group_by(Timepoint, Celltype) |> summarise(avg_count = Counts) |> ungroup() |> mutate(total_count = rep(total_count$total, each = 4)) |> mutate(prop = avg_count / total_count) |>
+  ggplot(aes(x = Timepoint, y = prop, fill = Celltype)) + 
+  geom_bar(stat = "identity") + theme_cowplot() + 
+  theme(legend.position = "top", axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+
+```{r}
+neuron_obj <- readRDS("data/neuron.Rds")
+or_list <- read.table("data/Olfr_GO_unique_Rel94.txt", header = T, sep = "\t", quote = "")
+
+mature_neuron_obj <- subset(neuron_obj, subset = RNA_snn_res.0.25 %in% c("1", "2", "4", "7", "8"), features = or_list$Gene.name)
+
+DimPlot(mature_neuron_obj, reduction = "umap", group.by = "RNA_snn_res.0.25", label = T) + 
+  theme(legend.position = "none")
+DimPlot(neuron_obj, reduction = "umap", group.by = "RNA_snn_res.0.25", label = T) + 
+  theme(legend.position = "none")
+DimPlot(neuron_obj, reduction = "umap", group.by = "cell_type_custom", label = T)
+```
+
+
+```{r}
+## UMI cutoff list
+umi_cutoff_list <- c(1, 2, 3, 4, 8, 16, 32, 64, 128, 256)
+# Access the counts matrix
+counts_matrix <- mature_neuron_obj[["RNA"]]$counts
+
+# Initialize an empty data frame to store the summary for each UMI cutoff
+umi_cutoff_df <- data.frame(
+  umi_cutoff = integer(),
+  OR_0 = integer(),
+  OR_1 = integer(),
+  OR_more = integer()
+)
+
+# Loop through each UMI cutoff
+for (umi_cutoff in umi_cutoff_list) {
+  
+  # Apply the transformation for the current umi_cutoff
+  cutoff_matrix <- apply(counts_matrix, 2, function(x) ifelse(x >= umi_cutoff, 1, 0))
+  
+  # Compute the row sums of the cutoff matrix
+  col_sums <- colSums(cutoff_matrix)
+  
+  # Count how many rows fall into each category
+  OR_0_count <- sum(col_sums == 0)
+  OR_1_count <- sum(col_sums == 1)
+  OR_more_count <- sum(col_sums > 1)
+  
+  # Append the result to the summary data frame
+  umi_cutoff_df <- rbind(
+    umi_cutoff_df,
+    data.frame(umi_cutoff = paste0("UMI_", umi_cutoff), OR_0 = OR_0_count, OR_1 = OR_1_count, OR_more = OR_more_count)
+  )
+}
+
+# View the resulting summary dataframe
+print(umi_cutoff_df)
+
+rownames(umi_cutoff_df) <- umi_cutoff_df$umi_cutoff
+umi_cutoff_df <- umi_cutoff_df[, -1]
+
+total_OR <- rowSums(umi_cutoff_df)
+# for every row, divides by its row sum
+umi_cutoff_df <- sweep(umi_cutoff_df, 1, total_OR, "/")
+```
+
+
+```{r visualizing the data similar to Cell paper S1 figure D}
+umi_cutoff_df <- umi_cutoff_df |> rownames_to_column(var = "UMI_threshold")
+umi_cutoff_df$UMI_threshold <- as.factor(umi_cutoff_df$UMI_threshold)
+
+# converting the data into long format for visualization
+umi_cutoff_df_long <- pivot_longer(umi_cutoff_df, -UMI_threshold, 
+                                   names_to = "OR", values_to = "percentage")
+
+# rearranging the factors
+umi_cutoff_df_long$UMI_threshold <- factor(umi_cutoff_df_long$UMI_threshold, 
+                                           levels = c("UMI_1", "UMI_2", "UMI_3", 
+                                                      "UMI_4", "UMI_8", "UMI_16", 
+                                                      "UMI_32", "UMI_64", "UMI_128", "UMI_256"))
+
+pdf("figure/OSN_OR_counts.pdf")
+umi_cutoff_df_long |> ggplot(aes(x = UMI_threshold, y = percentage, colour = OR, group = OR)) +
+  geom_point() + geom_line() + theme_cowplot() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Threshold (# of UMIs)") + ylab("Percent of mature OSN")
+dev.off()
+```
+
+
+```{r}
+# at 3 UMI threshold, find out the number of cells containing OR by dpi
+counts_matrix_dpi <- as.data.frame(t(apply(counts_matrix, 2, function(x) ifelse(x >= 3, 1, 0))))
+head(counts_matrix_dpi)
+
+# adding the dpi label  
+counts_matrix_dpi$dpi <- as.factor(sub("_.*", "", rownames(counts_matrix_dpi)))
+
+table(counts_matrix_dpi$dpi)
+
+gene_list <- rownames(counts_matrix_dpi)
+dpi_or_composition <- counts_matrix_dpi %>%
+  pivot_longer(cols = -dpi, names_to = "ORs", values_to = "count") %>%
+  group_by(ORs, dpi) %>%
+  summarize(count = sum(count), .groups = 'drop') %>%
+  pivot_wider(names_from = dpi, values_from = count, values_fill = list(count = 0))
+```
+
+
+```{r eval=FALSE, diagnostic for cell threshold of OR per dpi}
+# Define the thresholds vector
+cell_count_threshold <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+# Create a list to store the filtered dataframes for each threshold
+filtered_list <- list()
+row_count <- numeric(length(cell_count_threshold))
+
+# Loop through each threshold
+for (i in seq_along(cell_count_threshold)) {
+  threshold <- cell_count_threshold[i]
+  
+  # Filter the dataframe for the current threshold
+  dpi_or_composition_filtered <- dpi_or_composition[rowSums(dpi_or_composition < threshold) == 0, ]
+  
+  # Store the filtered dataframe in the list, using the threshold as a key
+  filtered_list[[paste0("Threshold_", threshold)]] <- dpi_or_composition_filtered[, c("ORs", "Naive", "D02", "D05", "D08", "D14")]
+  
+  row_count[i] <- nrow(dpi_or_composition_filtered)
+}
+
+
+cell_threshold_df <- data.frame(cell_count_threshold, row_count)
+
+pdf("figure/cell_threshold.pdf")
+cell_threshold_df |> 
+  ggplot(aes(x = as.factor(cell_count_threshold), y = row_count, group = 1, label = row_count)) + 
+  geom_point() + geom_line() + geom_text(hjust = 1, vjust = 1) + theme_cowplot() +
+  xlab("Cell count threshold") + ylab("Number of OR kept")
+dev.off()
+```
+
+
+```{r}
+# selecting the ORs of interest and compare its ES/AP/DV score
+# these scores are computed by taking the difference in GEP for each OR
+dpi_or_composition_filtered <- dpi_or_composition[rowSums(dpi_or_composition < 4) == 0, ]
+ORs_interested <- dpi_or_composition_filtered$ORs
+
+rbind(or_score, or_score_filtered) |> ggplot(aes(x = AP, colour = label)) +
+  geom_density() +        
+  labs(x = "AP", y = "Density", title = "AP") +
+  theme_cowplot()
+```
+

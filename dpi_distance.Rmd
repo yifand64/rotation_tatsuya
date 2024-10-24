@@ -1,0 +1,153 @@
+---
+title: "debug"
+authdpi: "Yifan Duan"
+date: "2024-09-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+subset_cell_metadata
+test <- subset_cell_metadata |> filter(OR == "Gm10310")
+test
+# access the distance matrix for these column and group by dpi, summarize distance?
+mat_for_or <- cos_dist[test$cell_name, test$cell_name]
+```
+
+
+```{r}
+# Assuming or_list contains the list of ORs to process
+or_list <- unique(subset_cell_metadata$OR)
+
+# Initialize an empty list to store the results for each OR
+results_list <- lapply(or_list, function(or) {
+  
+  # Filter the metadata for the current OR
+  test <- subset_cell_metadata |> filter(OR == or)
+  
+  # Check if there are enough cells for this OR
+  if(nrow(test) > 1) {
+    
+    # Access the distance matrix for these cells
+    mat_for_or <- cos_dist[test$cell_name, test$cell_name]
+    
+    # Extract the dpi information from the cell names
+    get_dpi <- as.factor(sub("_.*", "", rownames(mat_for_or)))
+    dpi_list <- levels(get_dpi)
+    
+    # Calculate median distances for each dpi level
+    dpi_medians <- sapply(dpi_list, function(dpi) {
+      # Subset the matrix for the current dpi group
+      mat_subset <- mat_for_or[get_dpi == dpi, get_dpi == dpi]
+      
+      # Get the upper triangular part of the matrix without the diagonal
+      upper_tri <- mat_subset[upper.tri(mat_subset)]
+      
+      # Calculate the median of the upper triangular part
+      median(upper_tri, na.rm = TRUE)
+    })
+    
+    # Create a dataframe to store the results for this OR
+    data.frame(
+      OR = or,
+      dpi = dpi_list,
+      median_distance = dpi_medians
+    )
+  }
+})
+
+# Combine the results into a single dataframe
+final_results_within <- do.call(rbind, results_list)
+
+# Display the final dataframe
+final_results_within |> ggplot(aes(x = median_distance)) + geom_density() +
+  theme_cowplot()
+```
+
+```{r}
+# Assuming or_list contains the list of ORs to process
+or_list <- unique(subset_cell_metadata$OR)
+
+# Initialize an empty list to store the results for each OR
+results_list <- lapply(or_list, function(or) {
+  
+  # Filter the metadata for the current OR
+  test <- subset_cell_metadata |> filter(OR == or)
+  
+  # Check if there are enough cells for this OR
+  if(nrow(test) > 1) {
+    
+    # Access the distance matrix for these cells
+    mat_for_or <- cos_dist[test$cell_name, test$cell_name]
+    
+    # Extract the dpi information from the cell names
+    get_dpi <- as.factor(sub("_.*", "", rownames(mat_for_or)))
+    dpi_list <- levels(get_dpi)
+    
+    # Initialize an empty list to store the pairwise dpi comparisons
+    pairwise_results <- list()
+    
+    # Compare all pairs of dpi levels
+    for(i in 1:(length(dpi_list) - 1)) {
+      for(j in (i + 1):length(dpi_list)) {
+        dpi1 <- dpi_list[i]
+        dpi2 <- dpi_list[j]
+        
+        # Subset the matrix for the two dpi groups
+        mat_subset <- mat_for_or[get_dpi == dpi1, get_dpi == dpi2]
+        
+        # Calculate the median of the matrix
+        median_dist <- median(mat_subset, na.rm = TRUE)
+        
+        # Store the result in the list
+        pairwise_results[[length(pairwise_results) + 1]] <- data.frame(
+          OR = or,
+          dpi1 = dpi1,
+          dpi2 = dpi2,
+          median_distance = median_dist
+        )
+      }
+    }
+    
+    # Combine the pairwise results for this OR into a dataframe
+    do.call(rbind, pairwise_results)
+  }
+})
+
+# Combine the results into a single dataframe
+final_results_across <- do.call(rbind, results_list)
+
+
+```
+
+
+```{r}
+ggplot() + 
+  geom_density(aes(x = median_distance$median_dist, y = ..density.., fill = "Within OR"), alpha = 0.5) +
+  geom_density(aes(x = final_results_within$median_distance, y = ..density.., fill = "Within OR; within dpi"), alpha = 0.5) +
+  geom_density(aes(x = final_results_across$median_distance, y = ..density.., fill = "Within OR; between dpi"), alpha = 0.5) +
+  scale_fill_manual(name = "Group", values = c("Within OR" = "blue", "Within OR; within dpi" = "red", "Within OR; between dpi" = "green")) + theme_cowplot() + xlab("Cosine distance")
+
+mat_for_or[get_dpi == "D14", get_dpi == "D05"]
+
+```
+
+```{r}
+combined_results <- rbind(
+  final_results_within[, c("median_distance", "OR")],
+  final_results_across[, c("median_distance", "OR")]
+)
+
+# Plot both density curves together with ggplot
+ggplot(combined_results, aes(x = median_distance)) + 
+  geom_density(alpha = 0.5) 
+
+ggplot() + 
+  geom_density(aes(x = median_distance$median_dist, y = ..density.., colour = "Within OR"), alpha = 0.5) +
+  geom_density(aes(x = combined_results$median_distance, y = ..density.., colour = "addition"), alpha = 0.5)
+```
+

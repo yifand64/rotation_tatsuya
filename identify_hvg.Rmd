@@ -22,6 +22,7 @@ library(cowplot)
 library(irlba)
 library(tidyr)
 library(tibble)
+library(readr)
 ```
 
 
@@ -62,7 +63,7 @@ ORs_interested <- dpi_or_composition_filtered$ORs
 cell_interested <- counts_matrix_dpi[, colnames(counts_matrix_dpi) %in% ORs_interested]
 all_zero_rows <- apply(cell_interested, 1, function(row) all(row == 0))
 
-# Display the rows that are all zero
+# Display the rows that are cell with 1 ORs
 cell_interested <- cell_interested |> filter(all_zero_rows == F)
 
 ```
@@ -95,7 +96,7 @@ length(unique(test)) # 5658 unique, not equal to 6160??
 ```
 
 
-```{r eval=FALSE}
+```{r}
 all_HVGs <- list()
 set.seed(25)
 
@@ -149,7 +150,9 @@ ggvenn(hvg_overlap)
 # cosine similarity
 library(lsa) 
 
-filtered_mature_neuron_mat <- filtered_mature_neuron_obj[["RNA"]]$data
+filtered_mature_neuron_obj <- ScaleData(filtered_mature_neuron_obj)
+
+filtered_mature_neuron_mat <- filtered_mature_neuron_obj[["RNA"]]$scale.data
 filtered_mature_neuron_mat_hvg <- filtered_mature_neuron_mat[VariableFeatures(filtered_mature_neuron_obj),]
 
 # saves time according to BPCells
@@ -164,19 +167,19 @@ colnames(pca) <- paste0("PC_", 1:ncol(pca))
 rownames(pca) <- colnames(filtered_mature_neuron_mat_hvg)
 
 plot(svd$d / sqrt(nrow(filtered_mature_neuron_mat_hvg)))
-pca_top_20 <- pca[, 1:20]
+pca_top_30 <- pca[, 1:30]
 
 # compute the cosine distance
-cos_dist <- 1 - cosine(t(pca_top_20))
+cos_dist <- 1 - cosine(t(pca_top_30))
 
-cos_dist[1:3, 1:3]
-# need to associate barcode with OR
+cos_dist[1:30, 1:3]
 
 #write.csv(cos_dist, file = "data/cos_dist.csv")
 ```
 
 
 ```{r}
+# returns the dpi and OR label for each cell 
 get_cell_metadata <- function(feature_table, OR_list){
   cell_metadata <- data.frame()
   
@@ -198,7 +201,7 @@ get_cell_metadata <- function(feature_table, OR_list){
   return(cell_metadata)
 }
 
-get_cell_metadata(cell_interested, ORs_interested)
+cell_metadata <- get_cell_metadata(cell_interested, ORs_interested)
 
 write_csv(cell_metadata, file = "data/cell_metadata.csv")
 # View the result
@@ -236,34 +239,75 @@ within_dist <- function(dist_matrix, metadata){
 }
 
 median_distance <- within_dist(cos_dist, subset_cell_metadata)
-hist(median_distance$median_dist)
+median_distance |> ggplot(aes(x = median_dist)) + geom_density() + theme_cowplot() +
+  xlab("Cosine distance")
+```
+
+
+
+```{r}
+OR_names <- unique(subset_cell_metadata$OR)  # Use unique OR names to avoid redundant calculations
+cell_name_by_OR <- split(subset_cell_metadata$cell_name, subset_cell_metadata$OR)  # Pre-split by OR
+
+between_dist <- list()
+
+# Loop through each OR to use as the comparison base
+for (comparison_base in OR_names) {
+  base_cells <- cell_name_by_OR[[comparison_base]]  # Get base cells for current OR
+  
+  median_distances <- list()  # Store median distances for this base OR
+  
+  # Loop through each other OR group
+  for (OR in OR_names) {
+    if (OR != comparison_base) {
+      comparison_cells <- cell_name_by_OR[[OR]]  # Get comparison cells for current OR
+      
+      # Subset the cos_dist matrix directly, avoiding `outer`
+      dist_matrix <- cos_dist[base_cells, comparison_cells]
+      
+      # Calculate the median distance and store
+      median_distances[[OR]] <- median(dist_matrix)
+    }
+  }
+  
+  # Store the median of medians for the current comparison base OR
+  between_dist[[comparison_base]] <- unlist(median_distances)
+}
+
+# Convert the results into a named vector if necessary
+between_dist <- unlist(between_dist)
+
 ```
 
 
 ```{r}
-between_dist <- c()
-for (or in median_distance$OR){
-  between_dist[[or]] <- median_distance |> filter(OR != or)
+ggplot() + 
+  geom_histogram(aes(x = median_distance$median_dist, y = ..density.., fill = "Within OR"), alpha = 0.5) +
+  geom_histogram(aes(x = between_dist, y = ..density.., fill = "Between ORs"), alpha = 0.5) +
+  scale_fill_manual(name = "Group", values = c("Within OR" = "blue", "Between ORs" = "red")) +
+  theme_cowplot() + xlab("Cosine distance")
+
+```
+
+
+```{r}
+# create a null distribution (shuffling OR labels)
+subset_cell_metadata_shuffled <- subset_cell_metadata
+within_dist_shuffled <- list()
+
+for (i in 1:1000){
+  subset_cell_metadata_shuffled$OR <- sample(subset_cell_metadata_shuffled$OR, length(subset_cell_metadata_shuffled$OR))
+  within_dist_shuffled[[i]] <- within_dist(cos_dist, subset_cell_metadata_shuffled)
 }
 
-# Initialize an empty data frame to store the results
-hist(between_dist$Olfr1019$median_dist)
-median_between_distances <- data.frame(OR = character(), 
-                                       between_dist_median = numeric(), 
-                                       stringsAsFactors = FALSE)
+within_dist_shuffled <- bind_rows(within_dist_shuffled)
+hist(within_dist_shuffled$median_dist)
 
-# Loop through each OR in the between_dist list
-for (or in names(between_dist)) {
-  # Compute the median of 'median_dist' for the current OR
-  median_value <- median(between_dist[[or]]$median_dist, na.rm = TRUE)
-  
-  # Add the result to the data frame
-  median_between_distances <- rbind(median_between_distances, 
-                                    data.frame(OR = or, 
-                                               between_dist_median = median_value))
-}
-
-# View the result
-print(median_between_distances)
+ggplot() + 
+  geom_density(aes(x = median_distance$median_dist, y = ..density.., fill = "Within OR"), alpha = 0.6) +
+  geom_density(aes(x = between_dist, y = ..density.., fill = "Between ORs"), alpha = 0.6) +
+  geom_density(aes(x = within_dist_shuffled$median_dist, y = ..density.., fill = "Shuffled 1000 times (within OR)"), alpha = 0.6) +
+  scale_fill_manual(name = "Group", values = c("Within OR" = "blue", "Between ORs" = "red", "Shuffled 1000 times (within OR)" = "green")) +
+  theme_cowplot() + xlab("Cosine distance")
 ```
 
